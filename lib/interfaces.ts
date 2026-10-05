@@ -23,6 +23,8 @@ export interface ITerminalOptions {
   focusOnOpen?: boolean; // Auto-focus terminal on open (default: true)
 
   // Scrolling options
+  /** Show the built-in canvas scrollbar. Disable when a host supplies its own. */
+  scrollbar?: boolean; // Default: true; scrolling APIs and wheel input remain enabled
   smoothScrollDuration?: number; // Duration in ms for smooth scroll animation (default: 100, 0 = instant)
   /**
    * When true, the viewport stays locked on the same scrollback content as

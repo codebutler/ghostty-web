@@ -482,7 +482,13 @@ export class Terminal extends TerminalCore {
       parent.addEventListener('wheel', this.handleWheel, { passive: false, capture: true });
 
       this.armBootstrapBlank();
-      this.renderer.render(this.bootstrapBuffer, true, this.viewportY, this, this.scrollbarOpacity);
+      this.renderer.render(
+        this.bootstrapBuffer,
+        true,
+        this.viewportY,
+        this,
+        this.options.scrollbar ? this.scrollbarOpacity : 0
+      );
 
       this.renderer.setOnRequestRender(() => this.requestRender());
 
@@ -579,7 +585,13 @@ export class Terminal extends TerminalCore {
 
     if (this.awaitingEcho && this.renderer && this.wasmTerm) {
       this.awaitingEcho = false;
-      this.renderer.render(this.wasmTerm, false, this.viewportY, this, this.scrollbarOpacity);
+      this.renderer.render(
+        this.wasmTerm,
+        false,
+        this.viewportY,
+        this,
+        this.options.scrollbar ? this.scrollbarOpacity : 0
+      );
     }
 
     this.requestRender();
@@ -680,7 +692,13 @@ export class Terminal extends TerminalCore {
 
     this.armBootstrapBlank();
     this.renderer!.clear();
-    this.renderer!.render(this.bootstrapBuffer, true, this.viewportY, this, this.scrollbarOpacity);
+    this.renderer!.render(
+      this.bootstrapBuffer,
+      true,
+      this.viewportY,
+      this,
+      this.options.scrollbar ? this.scrollbarOpacity : 0
+    );
 
     this.currentTitle = '';
   }
@@ -961,7 +979,13 @@ export class Terminal extends TerminalCore {
     }
     this.syncOutputStartTime = undefined;
 
-    this.renderer!.render(this.wasmTerm!, false, this.viewportY, this, this.scrollbarOpacity);
+    this.renderer!.render(
+      this.wasmTerm!,
+      false,
+      this.viewportY,
+      this,
+      this.options.scrollbar ? this.scrollbarOpacity : 0
+    );
     this.renderEmitter.fire({ start: 0, end: this.rows - 1 });
 
     const cursor = this.wasmTerm!.getCursor();
@@ -1157,6 +1181,7 @@ export class Terminal extends TerminalCore {
   // ==========================================================================
 
   private showScrollbar(): void {
+    if (!this.options.scrollbar) return;
     if (this.scrollbarHideTimeout) {
       window.clearTimeout(this.scrollbarHideTimeout);
       this.scrollbarHideTimeout = undefined;
@@ -1196,7 +1221,13 @@ export class Terminal extends TerminalCore {
       this.scrollbarOpacity = progress;
 
       if (this.renderer && this.wasmTerm) {
-        this.renderer.render(this.wasmTerm, false, this.viewportY, this, this.scrollbarOpacity);
+        this.renderer.render(
+          this.wasmTerm,
+          false,
+          this.viewportY,
+          this,
+          this.options.scrollbar ? this.scrollbarOpacity : 0
+        );
       }
 
       if (progress < 1) requestAnimationFrame(animate);
@@ -1213,7 +1244,13 @@ export class Terminal extends TerminalCore {
       this.scrollbarOpacity = startOpacity * (1 - progress);
 
       if (this.renderer && this.wasmTerm) {
-        this.renderer.render(this.wasmTerm, false, this.viewportY, this, this.scrollbarOpacity);
+        this.renderer.render(
+          this.wasmTerm,
+          false,
+          this.viewportY,
+          this,
+          this.options.scrollbar ? this.scrollbarOpacity : 0
+        );
       }
 
       if (progress < 1) {
@@ -1458,6 +1495,7 @@ export class Terminal extends TerminalCore {
   };
 
   private handleMouseDown = (e: MouseEvent): void => {
+    if (!this.options.scrollbar) return;
     if (!this.canvas || !this.renderer || !this.wasmTerm) return;
 
     const scrollbackLength = this.wasmTerm.getScrollbackLength();

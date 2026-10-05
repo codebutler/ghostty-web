@@ -26,6 +26,11 @@ Terminal colors and protocol replies come from native state. An optional
 `terminal.onLinkActivate = uri => { ... }` callback lets any embedding host
 handle URL navigation; the default still opens a browser tab.
 
+Set `scrollbar: false` when constructing a terminal to suppress the built-in
+canvas scrollbar and its pointer handling. Wheel input, `onScroll`, viewport
+queries, and scrolling methods remain available for hosts with their own
+scrollbar. The default is `true`.
+
 The canvas renderer supports direct Kitty RGB/RGBA/PNG images, chunking,
 queries, replacement, deletion, scrolling, cropping, offsets, and z layers.
 Cache keys include native image generations. Frames with images are repainted

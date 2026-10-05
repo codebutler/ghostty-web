@@ -77,6 +77,7 @@ export class TerminalCore implements IDisposable {
       cursorStyle: options.cursorStyle ?? 'block',
       theme: options.theme ?? {},
       scrollback: options.scrollback ?? 10000,
+      scrollbar: options.scrollbar ?? true,
       fontSize: options.fontSize ?? 15,
       fontFamily: options.fontFamily ?? 'monospace',
       allowTransparency: options.allowTransparency ?? false,
