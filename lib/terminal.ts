@@ -302,7 +302,13 @@ export class Terminal extends TerminalCore {
 
     this.updateWasmPixelSize();
 
-    this.renderer.render(this.wasmTerm, true, this.viewportY, this);
+    this.renderer.render(
+      this.wasmTerm,
+      true,
+      this.viewportY,
+      this,
+      this.options.scrollbar ? this.scrollbarOpacity : 0
+    );
   }
 
   private buildThemeColorsConfig(theme: Required<ITheme>): GhosttyTerminalConfig {
@@ -662,7 +668,13 @@ export class Terminal extends TerminalCore {
         this.canvas.style.width = `${metrics.width * cols}px`;
         this.canvas.style.height = `${metrics.height * rows}px`;
         this.updateWasmPixelSize();
-        this.renderer.render(this.wasmTerm, true, this.viewportY, this);
+        this.renderer.render(
+          this.wasmTerm,
+          true,
+          this.viewportY,
+          this,
+          this.options.scrollbar ? this.scrollbarOpacity : 0
+        );
       }
 
       this.resizeEmitter.fire({ cols, rows });
