@@ -102,7 +102,8 @@ export class OSC8LinkProvider implements ILinkProvider {
           activate: (event) => {
             // Open link if Ctrl/Cmd is pressed
             if (event.ctrlKey || event.metaKey) {
-              window.open(uri, '_blank', 'noopener,noreferrer');
+              if (this.terminal.onLinkActivate) this.terminal.onLinkActivate(uri);
+              else window.open(uri, '_blank', 'noopener,noreferrer');
             }
           },
         });
@@ -233,6 +234,7 @@ export class OSC8LinkProvider implements ILinkProvider {
  * Minimal terminal interface required by OSC8LinkProvider
  */
 export interface ITerminalForOSC8Provider {
+  onLinkActivate?: (uri: string) => void;
   buffer: {
     active: {
       length: number;

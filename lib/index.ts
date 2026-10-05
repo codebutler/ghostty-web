@@ -16,6 +16,8 @@ let ghosttyInstance: Ghostty | null = null;
  *
  * This creates a shared WASM instance that all Terminal instances will use.
  * For test isolation, pass a Ghostty instance directly to Terminal constructor.
+ * An optional path selects the WASM asset; otherwise it is loaded beside the
+ * browser bundle (or from the package root when running source files in Node).
  *
  * @example
  * ```typescript
@@ -26,11 +28,11 @@ let ghosttyInstance: Ghostty | null = null;
  * term.open(document.getElementById('terminal'));
  * ```
  */
-export async function init(): Promise<void> {
+export async function init(wasmPath?: string): Promise<void> {
   if (ghosttyInstance) {
     return; // Already initialized
   }
-  ghosttyInstance = await Ghostty.load();
+  ghosttyInstance = await Ghostty.load(wasmPath);
 }
 
 /**

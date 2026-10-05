@@ -13,13 +13,20 @@
 import type { ITheme } from './interfaces';
 import { KITTY_PLACEHOLDER, diacriticToInt } from './kitty_diacritics';
 import type { SelectionManager } from './selection-manager';
-import type { GhosttyCell, ILink, KittyImagePixels, KittyPlacementInfo } from './types';
+import type {
+  GhosttyCell,
+  ILink,
+  KittyImagePixels,
+  KittyPlacementInfo,
+  RenderStateColors,
+} from './types';
 import { CellFlags, KittyImageFormat } from './types';
 
 // Interface for objects that can be rendered
 export interface IRenderable {
   getLine(y: number): GhosttyCell[] | null;
   getCursor(): { x: number; y: number; visible: boolean; style?: 'block' | 'underline' | 'bar' };
+  getColors?(): RenderStateColors;
   getDimensions(): { cols: number; rows: number };
   isRowDirty(y: number): boolean;
   /** Returns true if a full redraw is needed (e.g., screen change) */
@@ -106,30 +113,9 @@ export const DEFAULT_THEME: Required<ITheme> = {
 // CanvasRenderer Class
 // ============================================================================
 
-/**
- * Staleness check for kittyImageCache: an entry is reusable iff every
- * identity field matches the just-fetched KittyImagePixels. Width/height/
- * format catch geometry/format changes (which can keep dataLen identical —
- * e.g., 100×50 RGBA and 50×100 RGBA both serialize to 20000 bytes), and
- * dataPtr (the WASM byteOffset) catches re-allocations from retransmits.
- */
-function cachedMatchesPixels(
-  cached: {
-    width: number;
-    height: number;
-    format: KittyImageFormat;
-    dataPtr: number;
-    dataLen: number;
-  },
-  pixels: KittyImagePixels
-): boolean {
-  return (
-    cached.width === pixels.width &&
-    cached.height === pixels.height &&
-    cached.format === pixels.format &&
-    cached.dataPtr === pixels.data.byteOffset &&
-    cached.dataLen === pixels.data.length
-  );
+/** Native generations distinguish same-sized retransmits, including reused pointers. */
+function cachedMatchesPixels(cached: { generation: bigint }, pixels: KittyImagePixels): boolean {
+  return cached.generation === pixels.generation;
 }
 
 export class CanvasRenderer {
@@ -167,16 +153,15 @@ export class CanvasRenderer {
    * a canvas painted from the WASM-side RGBA bytes so per-frame compositing
    * is just a drawImage call.
    *
-   * Staleness key combines width/height/format/dataPtr/dataLen — the
-   * kitty protocol allows reusing an id with new bytes, and dataLen alone
-   * is too weak (transposed dims or format change can keep byte count
-   * identical). dataPtr is the WASM byteOffset, which changes whenever
-   * ghostty frees + re-allocates the image bytes (i.e., on retransmit).
+   * Native image generations invalidate cached pixels on retransmission and
+   * screen changes even if the allocator reuses an address. Unplaced images
+   * are evicted from this canvas cache during the next frame.
    */
   private kittyImageCache = new Map<
     number,
     {
       canvas: HTMLCanvasElement;
+      generation: bigint;
       width: number;
       height: number;
       format: KittyImageFormat;
@@ -200,39 +185,8 @@ export class CanvasRenderer {
    */
   private currentDirectPlacements: KittyPlacementInfo[] = [];
 
-  /**
-   * Last frame's direct-placement signatures, keyed by image id. Used to
-   * detect placement add/remove/move/redecode so we can mark the affected
-   * rows for repaint (clearing stale image pixels) and skip the composite
-   * pass entirely when nothing has changed. dataLen is the same staleness
-   * discriminator used by kittyImageCache.
-   */
-  private lastKittyDirectSigs = new Map<
-    number,
-    {
-      viewportCol: number;
-      viewportRow: number;
-      pixelWidth: number;
-      pixelHeight: number;
-      sourceX: number;
-      sourceY: number;
-      sourceWidth: number;
-      sourceHeight: number;
-      imgWidth: number;
-      imgHeight: number;
-      imgFormat: KittyImageFormat;
-      dataPtr: number;
-      dataLen: number;
-    }
-  >();
-
-  /**
-   * Rows whose image footprint changed since last frame (placement added,
-   * removed, moved, resized, or re-decoded under the same id). Added to
-   * rowsToRender so the underlying text repaints — which clears stale
-   * image pixels — before we composite the current placements on top.
-   */
-  private kittyDamagedRows = new Set<number>();
+  // One final repaint removes image pixels when the last placement disappears.
+  private hadKittyGraphics = false;
 
   /**
    * Cached IRenderable on the current render() call so renderCellText
@@ -440,14 +394,30 @@ export class CanvasRenderer {
     // Multiple update() calls are safe - dirty state persists until clearDirty().
     const cursor = buffer.getCursor();
     const dims = buffer.getDimensions();
+    const colors = buffer.getColors?.();
+    if (colors) {
+      const css = (c: { r: number; g: number; b: number }) => this.rgbToCSS(c.r, c.g, c.b);
+      const background = css(colors.background);
+      const foreground = css(colors.foreground);
+      const cursorColor = css(colors.cursor ?? colors.foreground);
+      if (
+        background !== this.theme.background ||
+        foreground !== this.theme.foreground ||
+        cursorColor !== this.theme.cursor
+      ) {
+        this.theme = { ...this.theme, background, foreground, cursor: cursorColor };
+        forceAll = true;
+      }
+    }
 
-    // Pre-frame: build the virtual-placement index so unicode-placeholder
-    // cells can look up their target image's grid layout in O(1) during
-    // the per-cell text pass. Also collects direct placements + computes
-    // kittyDamagedRows (rows where a placement was added/removed/moved/
-    // re-decoded, so the text underneath needs repainting to clear stale
-    // image pixels).
-    this.precomputeKittyState(buffer, dims.rows);
+    // Resolve image placements before painting any rows.
+    this.precomputeKittyState(buffer, viewportY);
+    const hasGraphics =
+      this.currentDirectPlacements.length > 0 || this.kittyVirtualPlacements.size > 0;
+    // Repaint beneath images before compositing: repeated source-over drawing
+    // otherwise accumulates alpha, and removal must restore covered text.
+    forceAll ||= hasGraphics || this.hadKittyGraphics;
+    this.hadKittyGraphics = hasGraphics;
     const scrollbackLength = scrollbackProvider ? scrollbackProvider.getScrollbackLength() : 0;
 
     // Check if buffer needs full redraw (e.g., screen change between normal/alternate)
@@ -608,11 +578,7 @@ export class CanvasRenderer {
       const needsRender =
         viewportY > 0
           ? true
-          : forceAll ||
-            buffer.isRowDirty(y) ||
-            selectionRows.has(y) ||
-            hyperlinkRows.has(y) ||
-            this.kittyDamagedRows.has(y);
+          : forceAll || buffer.isRowDirty(y) || selectionRows.has(y) || hyperlinkRows.has(y);
 
       if (needsRender) {
         rowsToRender.add(y);
@@ -664,18 +630,7 @@ export class CanvasRenderer {
 
     // Link underlines are drawn during cell rendering (see renderCell)
 
-    // Composite kitty graphics images on top of the text. MVP z-order is
-    // "above text" — programs sending images typically clear the cell area
-    // first, so there's nothing meaningful underneath. A future commit can
-    // split into below/above-text passes via PlacementLayer if real apps
-    // need it.
-    //
-    // Skip when no rows were repainted: the previous frame's image pixels
-    // are still on the canvas and unchanged, and re-issuing drawImage with
-    // source-over compositing onto translucent images would accumulate
-    // alpha. Placement adds/removes/moves seed kittyDamagedRows in
-    // precomputeKittyState, which forces those rows into rowsToRender and
-    // flips anyLinesRendered to true.
+    // Positive-z images overlay text; negative-z images are drawn per row.
     if (this.currentDirectPlacements.length > 0 && anyLinesRendered) {
       this.renderKittyImages();
     }
@@ -725,6 +680,8 @@ export class CanvasRenderer {
     this.ctx.fillStyle = this.theme.background;
     this.ctx.fillRect(0, lineY, lineWidth, this.metrics.height);
 
+    this.renderKittyImages('below-bg', y);
+
     // PASS 1: Draw all cell backgrounds first
     // This ensures all backgrounds are painted before any text, allowing text
     // to "bleed" across cell boundaries without being covered by adjacent backgrounds
@@ -733,6 +690,8 @@ export class CanvasRenderer {
       if (cell.width === 0) continue; // Skip spacer cells for wide characters
       this.renderCellBackground(cell, x, y);
     }
+
+    this.renderKittyImages('below-text', y);
 
     // PASS 2: Draw all cell text and decorations
     // Now text can safely extend beyond cell boundaries (for complex scripts)
@@ -1150,94 +1109,28 @@ export class CanvasRenderer {
     }
   }
 
-  /**
-   * Composite all visible kitty graphics placements onto the canvas.
-   * Cheap when no graphics are active (one method check, one terminal_get).
-   * Decode work is amortized across frames via kittyImageCache.
-   */
-  /**
-   * Walk the placement iterator once at frame start, partitioning the
-   * results: virtual placements go into kittyVirtualPlacements (keyed
-   * by image id) for placeholder-cell lookup; direct visible placements
-   * stay implicit and get re-iterated by renderKittyImages later.
-   *
-   * Also caches the storage handle for renderPlaceholderCell so the
-   * per-cell hot path doesn't have to re-resolve it.
-   */
-  private precomputeKittyState(buffer: IRenderable, dimsRows: number): void {
+  /** Resolve placements in the JS scrollback viewport and retire unused textures. */
+  private precomputeKittyState(buffer: IRenderable, viewportY: number): void {
     this.kittyVirtualPlacements.clear();
     this.currentDirectPlacements = [];
-    this.kittyDamagedRows.clear();
-    this.currentKittyGraphics = null;
-
-    const newSigs: typeof this.lastKittyDirectSigs = new Map();
-    const cellH = this.metrics.height;
-    const markRows = (viewportRow: number, pixelHeight: number): void => {
-      const rowStart = Math.max(0, Math.floor(viewportRow));
-      const rowEnd = Math.min(dimsRows, Math.ceil(viewportRow + pixelHeight / cellH));
-      for (let r = rowStart; r < rowEnd; r++) this.kittyDamagedRows.add(r);
-    };
-
-    if (buffer.getKittyGraphics && buffer.iterPlacements) {
-      const graphics = buffer.getKittyGraphics();
-      if (graphics !== null) {
-        this.currentKittyGraphics = graphics;
-        // onlyVisible=false so virtual placements come through too. We
-        // partition: virtuals into kittyVirtualPlacements (placeholder-cell
-        // lookup), directs into currentDirectPlacements (composite pass).
-        for (const p of buffer.iterPlacements(graphics, false)) {
-          if (p.isVirtual) {
-            this.kittyVirtualPlacements.set(p.imageId, p);
-            continue;
-          }
+    this.currentKittyGraphics = buffer.getKittyGraphics?.() ?? null;
+    const activeImages = new Set<number>();
+    if (this.currentKittyGraphics !== null && buffer.iterPlacements) {
+      for (const p of buffer.iterPlacements(this.currentKittyGraphics, false)) {
+        activeImages.add(p.imageId);
+        if (p.isVirtual) this.kittyVirtualPlacements.set(p.imageId, p);
+        else {
+          p.viewportRow += viewportY;
           this.currentDirectPlacements.push(p);
-          const pixels = buffer.getKittyImagePixels?.(graphics, p.imageId);
-          const sig = {
-            viewportCol: p.viewportCol,
-            viewportRow: p.viewportRow,
-            pixelWidth: p.pixelWidth,
-            pixelHeight: p.pixelHeight,
-            sourceX: p.sourceX,
-            sourceY: p.sourceY,
-            sourceWidth: p.sourceWidth,
-            sourceHeight: p.sourceHeight,
-            imgWidth: pixels?.width ?? 0,
-            imgHeight: pixels?.height ?? 0,
-            imgFormat: pixels?.format ?? (0 as KittyImageFormat),
-            dataPtr: pixels?.data.byteOffset ?? 0,
-            dataLen: pixels?.data.length ?? 0,
-          };
-          newSigs.set(p.imageId, sig);
-          const prev = this.lastKittyDirectSigs.get(p.imageId);
-          const changed =
-            !prev ||
-            prev.viewportCol !== sig.viewportCol ||
-            prev.viewportRow !== sig.viewportRow ||
-            prev.pixelWidth !== sig.pixelWidth ||
-            prev.pixelHeight !== sig.pixelHeight ||
-            prev.sourceX !== sig.sourceX ||
-            prev.sourceY !== sig.sourceY ||
-            prev.sourceWidth !== sig.sourceWidth ||
-            prev.sourceHeight !== sig.sourceHeight ||
-            prev.imgWidth !== sig.imgWidth ||
-            prev.imgHeight !== sig.imgHeight ||
-            prev.imgFormat !== sig.imgFormat ||
-            prev.dataPtr !== sig.dataPtr ||
-            prev.dataLen !== sig.dataLen;
-          if (changed) {
-            markRows(sig.viewportRow, sig.pixelHeight);
-            if (prev) markRows(prev.viewportRow, prev.pixelHeight);
-          }
         }
       }
     }
-
-    // Removed placements (were drawn last frame, gone now): mark their
-    // rows so text repaint clears stale image pixels.
-    for (const [id, prev] of this.lastKittyDirectSigs) {
-      if (!newSigs.has(id)) markRows(prev.viewportRow, prev.pixelHeight);
+    this.currentDirectPlacements.sort(
+      (a, b) => a.z - b.z || a.imageId - b.imageId || a.placementId - b.placementId
+    );
+    for (const id of this.kittyImageCache.keys()) {
+      if (!activeImages.has(id)) this.kittyImageCache.delete(id);
     }
-    this.lastKittyDirectSigs = newSigs;
   }
 
   /**
@@ -1259,6 +1152,7 @@ export class CanvasRenderer {
     if (!canvas) return null;
     this.kittyImageCache.set(imageId, {
       canvas,
+      generation: pixels.generation,
       width: pixels.width,
       height: pixels.height,
       format: pixels.format,
@@ -1451,12 +1345,28 @@ export class CanvasRenderer {
     return true;
   }
 
-  private renderKittyImages(): void {
+  private renderKittyImages(
+    layer: 'below-bg' | 'below-text' | 'above' = 'above',
+    row?: number
+  ): void {
     const buffer = this.currentRenderBuffer;
     const graphics = this.currentKittyGraphics;
     if (!buffer || graphics === null || !buffer.getKittyImagePixels) return;
 
+    this.ctx.save();
+    if (row !== undefined) {
+      this.ctx.beginPath();
+      this.ctx.rect(
+        0,
+        row * this.metrics.height,
+        this.canvas.width / this.devicePixelRatio,
+        this.metrics.height
+      );
+      this.ctx.clip();
+    }
     for (const p of this.currentDirectPlacements) {
+      const placementLayer = p.z < -1073741824 ? 'below-bg' : p.z < 0 ? 'below-text' : 'above';
+      if (placementLayer !== layer) continue;
       let cached = this.kittyImageCache.get(p.imageId);
       const pixels = buffer.getKittyImagePixels(graphics, p.imageId);
       if (!pixels) continue;
@@ -1468,6 +1378,7 @@ export class CanvasRenderer {
         if (!canvas) continue;
         cached = {
           canvas,
+          generation: pixels.generation,
           width: pixels.width,
           height: pixels.height,
           format: pixels.format,
@@ -1487,12 +1398,13 @@ export class CanvasRenderer {
         p.sourceY,
         p.sourceWidth,
         p.sourceHeight,
-        p.viewportCol * this.metrics.width,
-        p.viewportRow * this.metrics.height,
+        p.viewportCol * this.metrics.width + p.xOffset,
+        p.viewportRow * this.metrics.height + p.yOffset,
         p.pixelWidth,
         p.pixelHeight
       );
     }
+    this.ctx.restore();
   }
 
   /**

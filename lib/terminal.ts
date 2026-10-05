@@ -95,6 +95,8 @@ function createBlankBootstrapCells(
 // ============================================================================
 
 export class Terminal extends TerminalCore {
+  /** Override link navigation for embedding hosts. Defaults to window.open. */
+  public onLinkActivate?: (uri: string) => void;
   // Unicode API (xterm.js compatibility)
   public readonly unicode: IUnicodeVersionProvider = {
     get activeVersion(): string {
@@ -516,55 +518,15 @@ export class Terminal extends TerminalCore {
     this.writeInternal(data, callback);
   }
 
-  private stripUnimplementedTitleSequences(data: string | Uint8Array): string | Uint8Array {
-    if (typeof data === 'string') {
-      return data.replace(/\x1bk[^\x1b\x07]*(?:\x1b\\|\x07)/g, '');
-    }
-    let i = 0;
-    let writeIdx = -1;
-    let out: Uint8Array | null = null;
-    while (i < data.length) {
-      if (data[i] === 0x1b && i + 1 < data.length && data[i + 1] === 0x6b) {
-        let j = i + 2;
-        while (j < data.length) {
-          if (data[j] === 0x07) {
-            j++;
-            break;
-          }
-          if (data[j] === 0x1b && j + 1 < data.length && data[j + 1] === 0x5c) {
-            j += 2;
-            break;
-          }
-          j++;
-        }
-        if (out === null) {
-          out = new Uint8Array(data.length);
-          out.set(data.subarray(0, i));
-          writeIdx = i;
-        }
-        i = j;
-        continue;
-      }
-      if (out !== null) {
-        out[writeIdx++] = data[i];
-      }
-      i++;
-    }
-    if (out === null) return data;
-    return out.subarray(0, writeIdx);
-  }
-
   private writeInternal(data: string | Uint8Array, callback?: () => void): void {
     this.disarmBootstrapBlank();
-
-    const sanitized = this.stripUnimplementedTitleSequences(data);
 
     const preserveScroll = this.options.preserveScrollOnWrite === true;
     const savedViewportY = preserveScroll ? this.viewportY : 0;
     const savedScrollback =
       preserveScroll && savedViewportY > 0 ? this.wasmTerm!.getScrollbackLength() : 0;
 
-    this.wasmTerm!.write(sanitized);
+    this.wasmTerm!.write(data);
 
     if (this.options.emitTerminalResponses) {
       this.processTerminalResponses();
