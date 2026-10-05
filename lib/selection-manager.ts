@@ -103,7 +103,8 @@ export class SelectionManager {
     terminal: Terminal,
     renderer: CanvasRenderer,
     wasmTerm: GhosttyTerminal,
-    textarea: HTMLTextAreaElement
+    textarea: HTMLTextAreaElement,
+    private readonly scheduleRender: () => void = () => {}
   ) {
     this.terminal = terminal;
     this.renderer = renderer;
@@ -1060,10 +1061,8 @@ export class SelectionManager {
    * Request a render update (triggers selection overlay redraw)
    */
   private requestRender(): void {
-    // The render loop will automatically pick up the new selection state
-    // and redraw the affected lines. This happens at 60fps.
-    //
-    // Note: When clearSelection() is called, it adds dirty rows to dirtySelectionRows
-    // which the renderer can use to know which lines to redraw.
+    // Selection changes are independent of terminal output and cursor blinking.
+    // Wake the terminal's coalesced scheduler, including when clearing a drag.
+    this.scheduleRender();
   }
 }

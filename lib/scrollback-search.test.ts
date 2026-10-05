@@ -29,6 +29,7 @@ test('programmatic selection addresses absolute buffer rows and spans wraps', ()
   selection.terminal = { getViewportY: () => 10 };
   selection.selectionChangedEmitter = new EventEmitter();
   selection.dirtySelectionRows = new Set();
+  selection.scheduleRender = () => {};
   selection.select(6, 12, 5);
   expect(selection.getSelectionPosition()).toEqual({ start: { x: 6, y: 12 }, end: { x: 3, y: 13 } });
   selection.select(0, 0, 2);

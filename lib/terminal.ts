@@ -458,7 +458,8 @@ export class Terminal extends TerminalCore {
         this,
         this.renderer,
         this.wasmTerm!,
-        this.textarea
+        this.textarea,
+        () => this.requestRender()
       );
 
       this.renderer.setSelectionManager(this.selectionManager);
