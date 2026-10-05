@@ -185,9 +185,7 @@ export class Buffer implements IBuffer {
       // So scrollbackOffset = y directly!
       const scrollbackOffset = y;
       cells = wasmTerm.getScrollbackLine(scrollbackOffset);
-      // TODO: We'd need WASM API to check if scrollback line is wrapped
-      // For now, assume not wrapped
-      isWrapped = false;
+      isWrapped = wasmTerm.isScrollbackRowWrapped(scrollbackOffset);
     } else {
       // Accessing visible screen
       lineNumber = this.bufferType === 'normal' ? y - scrollbackLength : y;
@@ -199,7 +197,11 @@ export class Buffer implements IBuffer {
       return undefined;
     }
 
-    return new BufferLine(cells, isWrapped, wasmTerm.cols);
+    return new BufferLine(cells, isWrapped, wasmTerm.cols, (col) =>
+      this.bufferType === 'normal' && y < scrollbackLength
+        ? wasmTerm.getScrollbackGraphemeString(y, col)
+        : wasmTerm.getGraphemeString(y - (this.bufferType === 'normal' ? scrollbackLength : 0), col)
+    );
   }
 
   getNullCell(): IBufferCell {
@@ -223,7 +225,7 @@ export class BufferLine implements IBufferLine {
   private _isWrapped: boolean;
   private _length: number;
 
-  constructor(cells: GhosttyCell[], isWrapped: boolean, length: number) {
+  constructor(cells: GhosttyCell[], isWrapped: boolean, length: number, private grapheme?: (col: number) => string) {
     this.cells = cells;
     this._isWrapped = isWrapped;
     this._length = length;
@@ -264,7 +266,7 @@ export class BufferLine implements IBufferLine {
       );
     }
 
-    return new BufferCell(this.cells[x], x);
+    return new BufferCell(this.cells[x], x, this.grapheme);
   }
 
   translateToString(trimRight = false, startColumn = 0, endColumn = this._length): string {
@@ -300,13 +302,18 @@ export class BufferCell implements IBufferCell {
   private cell: GhosttyCell;
   private x: number;
 
-  constructor(cell: GhosttyCell, x: number) {
+  constructor(cell: GhosttyCell, x: number, private grapheme?: (col: number) => string) {
     this.cell = cell;
     this.x = x;
   }
 
   getChars(): string {
     const codepoint = this.cell.codepoint;
+    if (this.cell.width === 0) return '';
+    // History cells carry their base codepoint; ask for the full cluster
+    // whenever it may contain combining characters or a joined emoji.
+    if (this.grapheme && (this.cell.grapheme_len > 0 || codepoint > 127))
+      return this.grapheme(this.x);
 
     // Return empty string for null character or invalid codepoints
     if (codepoint === 0) {

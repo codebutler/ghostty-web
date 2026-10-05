@@ -280,28 +280,15 @@ export class SelectionManager {
    * xterm.js compatible API
    */
   select(column: number, row: number, length: number): void {
-    // Clamp to valid ranges
+    // xterm-compatible API uses absolute buffer rows, including history.
     const dims = this.wasmTerm.getDimensions();
-    row = Math.max(0, Math.min(row, dims.rows - 1));
+    const rows = this.wasmTerm.getScrollbackLength() + dims.rows;
+    if (length <= 0 || row < 0 || row >= rows) { this.clearSelection(); return; }
+    this.clearSelection();
     column = Math.max(0, Math.min(column, dims.cols - 1));
-
-    // Calculate end position
-    let endRow = row;
-    let endCol = column + length - 1;
-
-    // Handle wrapping if selection extends past end of line
-    while (endCol >= dims.cols) {
-      endCol -= dims.cols;
-      endRow++;
-    }
-
-    // Clamp end row
-    endRow = Math.min(endRow, dims.rows - 1);
-
-    // Convert viewport rows to absolute rows
-    const viewportY = this.getViewportY();
-    this.selectionStart = { col: column, absoluteRow: viewportY + row };
-    this.selectionEnd = { col: endCol, absoluteRow: viewportY + endRow };
+    const end = Math.min(row * dims.cols + column + length - 1, rows * dims.cols - 1);
+    this.selectionStart = { col: column, absoluteRow: row };
+    this.selectionEnd = { col: end % dims.cols, absoluteRow: Math.floor(end / dims.cols) };
     this.requestRender();
     this.selectionChangedEmitter.fire();
   }
@@ -336,12 +323,13 @@ export class SelectionManager {
   getSelectionPosition():
     | { start: { x: number; y: number }; end: { x: number; y: number } }
     | undefined {
-    const coords = this.normalizeSelection();
-    if (!coords) return undefined;
-
+    if (!this.selectionStart || !this.selectionEnd) return undefined;
+    let start = this.selectionStart, end = this.selectionEnd;
+    if (start.absoluteRow > end.absoluteRow ||
+        (start.absoluteRow === end.absoluteRow && start.col > end.col)) [start, end] = [end, start];
     return {
-      start: { x: coords.startCol, y: coords.startRow },
-      end: { x: coords.endCol, y: coords.endRow },
+      start: { x: start.col, y: start.absoluteRow },
+      end: { x: end.col + 1, y: end.absoluteRow },
     };
   }
 

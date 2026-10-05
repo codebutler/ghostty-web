@@ -1447,6 +1447,27 @@ export class GhosttyTerminal {
     return this.readGridLine(PointTag.HISTORY, offset);
   }
 
+  /** Whether a history row continues the preceding logical line. */
+  isScrollbackRowWrapped(offset: number): boolean {
+    const point = this.allocPoint(PointTag.HISTORY, 0, offset);
+    const ref = this.exports.ghostty_wasm_alloc(12);
+    const row = this.exports.ghostty_wasm_alloc(8);
+    const flag = this.exports.ghostty_wasm_alloc(1);
+    new DataView(this.memory.buffer).setUint32(ref, 12, true);
+    try {
+      if (this.exports.ghostty_terminal_grid_ref(this.handle, point, ref) !== 0) return false;
+      if (this.exports.ghostty_grid_ref_row(ref, row) !== 0) return false;
+      const raw = new DataView(this.memory.buffer).getBigUint64(row, true);
+      if (this.exports.ghostty_row_get(raw, RowData.WRAP_CONTINUATION, flag) !== 0) return false;
+      return new DataView(this.memory.buffer).getUint8(flag) !== 0;
+    } finally {
+      this.exports.ghostty_wasm_free(point, 24);
+      this.exports.ghostty_wasm_free(ref, 12);
+      this.exports.ghostty_wasm_free(row, 8);
+      this.exports.ghostty_wasm_free(flag, 1);
+    }
+  }
+
   /**
    * Get the hyperlink URI for a cell at the given position in the active
    * viewport. Returns null when no hyperlink is attached.
@@ -1552,6 +1573,10 @@ export class GhosttyTerminal {
 
           const cell = this.makeEmptyCell();
           cell.codepoint = cp;
+          this.exports.ghostty_cell_get(cellU64, CellData.CONTENT_TAG, u32Ptr);
+          // GHOSTTY_CELL_CONTENT_CODEPOINT_GRAPHEME = 1. Only the presence
+          // is needed here; full clusters are read through grid_ref_graphemes.
+          cell.grapheme_len = new DataView(this.memory.buffer).getUint32(u32Ptr, true) === 1 ? 1 : 0;
           cell.width = width;
           cell.hyperlink_id = hasHyperlink ? 1 : 0;
 
