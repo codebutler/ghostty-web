@@ -119,10 +119,9 @@ export class FitAddon implements ITerminalAddon {
         terminal.resize(dims.cols, dims.rows);
       }
     } finally {
-      // Clear flag after a short delay to allow DOM to settle
-      setTimeout(() => {
-        this._isResizing = false;
-      }, 50);
+      // Only nested calls are re-entrant. A later fit may already have a new
+      // container size; dropping it for 50ms can leave the grid permanently stale.
+      this._isResizing = false;
     }
   }
 
